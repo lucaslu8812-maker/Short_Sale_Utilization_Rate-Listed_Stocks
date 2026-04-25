@@ -114,8 +114,8 @@ def build():
 
     # ⭐⭐⭐ 關鍵：API壞掉 → 保留舊資料（不覆蓋）
     if t.empty or y.empty:
-        print("⚠️ 保留舊資料")
-        return None, "⚠️ 使用前次資料"
+        print("⚠️ API失敗，本次不更新")
+        return None, None
 
     if cap.empty:
         return None, "❌ cap資料異常"
@@ -160,8 +160,8 @@ def generate_html(df, msg):
     now = datetime.now(pytz.timezone("Asia/Taipei")).strftime("%Y-%m-%d %H:%M")
 
     # ⭐⭐⭐ 不覆蓋舊資料（關鍵）
-    if df is None:
-        print("⚠️ 跳過寫入 index.html（保留舊資料）")
+    if df is None or df.empty:
+        print("⚠️ 無有效資料，不覆蓋 index.html")
         return
 
     rows = ""

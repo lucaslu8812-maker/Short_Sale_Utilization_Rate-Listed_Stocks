@@ -21,7 +21,7 @@ def get_valid_date(offset_start=1):
     return None
 
 
-# ===== 借券資料（完全防炸）=====
+# ===== 借券賣出餘額 =====
 def get_borrow(date):
     url = f"https://www.twse.com.tw/exchangeReport/TWT72U?response=json&date={date}"
     data = requests.get(url).json()
@@ -31,7 +31,7 @@ def get_borrow(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    # 自動找餘額欄
+    # 自動找餘額欄位（避免名稱變動）
     target_col = None
     for col in df.columns:
         if "餘額" in col:
@@ -51,11 +51,22 @@ def get_cap(date):
     url = f"https://www.twse.com.tw/exchangeReport/BWIBBU_d?response=json&date={date}"
     data = requests.get(url).json()
 
-    if not data.get("data"):
+    if not data.get("data") or not data.get("fields"):
         return pd.DataFrame(columns=["證券代號","發行股數"])
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
-    df["股本"] = pd.to_numeric(df["股本"], errors="coerce")
+
+    # 自動找股本欄位
+    cap_col = None
+    for col in df.columns:
+        if "股本" in col or "資本" in col:
+            cap_col = col
+            break
+
+    if cap_col is None:
+        return pd.DataFrame(columns=["證券代號","發行股數"])
+
+    df["股本"] = pd.to_numeric(df[cap_col], errors="coerce")
     df["發行股數"] = df["股本"] * 10_000_000
 
     return df[["證券代號", "發行股數"]]
@@ -73,6 +84,7 @@ def build():
     y = get_borrow(yesterday)
     cap = get_cap(today)
 
+    # 防呆
     if t.empty or y.empty or cap.empty:
         return None, "❌ API資料異常"
 

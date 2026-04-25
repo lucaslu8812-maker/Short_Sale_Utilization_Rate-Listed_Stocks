@@ -14,7 +14,6 @@ def get_last_n_valid_dates(n=3):
     for i in range(1, 15):
         d = (now - timedelta(days=i)).strftime("%Y%m%d")
         try:
-            # ⭐ 改這裡：TWT93U
             url = f"https://www.twse.com.tw/exchangeReport/TWT93U?response=json&date={d}"
             data = requests.get(url, timeout=10).json()
 
@@ -30,9 +29,8 @@ def get_last_n_valid_dates(n=3):
     return dates
 
 
-# ===== 借券賣出餘額（正確抓）=====
+# ===== 借券賣出餘額 =====
 def get_borrow(date):
-    # ⭐ 改這裡：TWT93U
     url = f"https://www.twse.com.tw/exchangeReport/TWT93U?response=json&date={date}"
     data = requests.get(url).json()
 
@@ -41,9 +39,24 @@ def get_borrow(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    df["證券代號"] = df["證券代號"].astype(str).str.zfill(4)
+    # ⭐ 自動找欄位（修正重點）
+    code_col = None
+    name_col = None
 
-    # ⭐ 改這裡：直接抓「當日餘額」
+    for col in df.columns:
+        if "代號" in col:
+            code_col = col
+        if "名稱" in col:
+            name_col = col
+
+    if code_col is None or name_col is None:
+        print("❌ 找不到代號/名稱欄:", df.columns)
+        return pd.DataFrame(columns=["證券代號","證券名稱","餘額"])
+
+    df["證券代號"] = df[code_col].astype(str).str.zfill(4)
+    df["證券名稱"] = df[name_col]
+
+    # ⭐ 抓「當日餘額」
     target_col = None
     for col in df.columns:
         if "當日餘額" in col:
@@ -51,7 +64,7 @@ def get_borrow(date):
             break
 
     if target_col is None:
-        print("❌ 找不到當日餘額欄:", df.columns)
+        print("❌ 找不到當日餘額:", df.columns)
         return pd.DataFrame(columns=["證券代號","證券名稱","餘額"])
 
     df["餘額"] = (

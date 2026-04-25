@@ -141,7 +141,7 @@ def build():
     df = pd.merge(t, y, on="證券代號", suffixes=("_t", "_y"))
 
     # ⭐ ⭐ ⭐ 補回你原本的過濾（很重要）
-    df = df[~df["證券名稱_t"].str.contains(r"\*", na=False)]
+    df = df[~df["證券名稱_t"].str.contains(r"[\*\＊]", na=False)]
 
     if not cap.empty:
         df = pd.merge(df, cap, on="證券代號", how="left")

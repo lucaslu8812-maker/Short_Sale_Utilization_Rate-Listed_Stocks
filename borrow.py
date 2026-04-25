@@ -14,23 +14,34 @@ def get_valid_date(offset_start=1):
     tz = pytz.timezone("Asia/Taipei")
     now = datetime.now(tz)
 
-    for i in range(offset_start, offset_start + 30):
+    for i in range(offset_start, offset_start + 30):  # ⭐ 你之前已改30天
         d = (now - timedelta(days=i)).strftime("%Y%m%d")
         try:
             url = f"https://www.twse.com.tw/exchangeReport/TWT93U?response=json&date={d}"
             data = requests.get(url, headers=HEADERS, timeout=10).json()
             if data.get("stat") == "OK" and data.get("data"):
-                print("使用日期:", d)
                 return d
         except:
             continue
     return None
 
 
-# ===== 借券資料（✅修正 * 過濾）=====
+# ===== 借券資料（⭐ 加 retry + 原本邏輯不動）=====
 def get_borrow(date):
     url = f"https://www.twse.com.tw/exchangeReport/TWT93U?response=json&date={date}"
-    data = requests.get(url, headers=HEADERS, timeout=10).json()
+
+    data = None
+    for _ in range(3):  # ⭐ retry 3 次
+        try:
+            res = requests.get(url, headers=HEADERS, timeout=10)
+            data = res.json()
+            if data.get("stat") == "OK" and data.get("data"):
+                break
+        except:
+            pass
+    else:
+        print(f"❌ API失敗: {date}")
+        return pd.DataFrame(columns=["證券代號","證券名稱","餘額"])
 
     if not data.get("data") or not data.get("fields"):
         return pd.DataFrame(columns=["證券代號","證券名稱","餘額"])
@@ -54,7 +65,7 @@ def get_borrow(date):
     df["證券代號"] = df[code_col].astype(str).str.zfill(4)
     df["證券名稱"] = df[name_col]
 
-    # ⭐⭐⭐ 關鍵：在這裡過濾 *（半形+全形）
+    # ⭐ 保留你之前修好的：過濾 * 股票
     df = df[~df["證券名稱"].str.contains(r"[\*\＊]", na=False)]
 
     # ⭐ 抓「借券賣出當日餘額」
@@ -101,8 +112,13 @@ def build():
     y = get_borrow(yesterday)
     cap = get_cap()
 
-    if t.empty or y.empty or cap.empty:
-        return None, "❌ API資料異常"
+    # ⭐⭐⭐ 關鍵：API壞掉 → 保留舊資料（不覆蓋）
+    if t.empty or y.empty:
+        print("⚠️ 保留舊資料")
+        return None, "⚠️ 使用前次資料"
+
+    if cap.empty:
+        return None, "❌ cap資料異常"
 
     # ⭐ 若只有股本 → 轉發行股數
     if "發行股數" not in cap.columns and "股本" in cap.columns:
@@ -143,8 +159,10 @@ def build():
 def generate_html(df, msg):
     now = datetime.now(pytz.timezone("Asia/Taipei")).strftime("%Y-%m-%d %H:%M")
 
+    # ⭐⭐⭐ 不覆蓋舊資料（關鍵）
     if df is None:
-        df = pd.DataFrame([{"排名":"-","證券代號":"-","證券名稱_t":"無資料"}])
+        print("⚠️ 跳過寫入 index.html（保留舊資料）")
+        return
 
     rows = ""
     for _, r in df.iterrows():

@@ -31,13 +31,10 @@ def get_borrow(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    # 過濾合計列
-    df = df[~df["證券代號"].astype(str).str.contains("合計")]
-
-    # ⭐ 統一代號格式
+    # 統一代號格式
     df["證券代號"] = df["證券代號"].astype(str).str.zfill(4)
 
-    # 找餘額欄
+    # 找餘額欄位
     target_col = None
     for col in df.columns:
         if "餘額" in col:
@@ -58,16 +55,40 @@ def get_borrow(date):
     return df[["證券代號", "證券名稱", "餘額"]]
 
 
-# ===== 讀 cap.csv =====
+# ===== 股本（從 cap.csv 轉發行股數）=====
 def get_cap():
     try:
         df = pd.read_csv("cap.csv")
 
-        # ⭐ 統一代號格式（關鍵）
+        # ⭐ 統一代號格式
         df["證券代號"] = df["證券代號"].astype(str).str.zfill(4)
 
-        return df
-    except:
+        # ⭐ 自動找股本欄
+        cap_col = None
+        for col in df.columns:
+            if "股本" in col:
+                cap_col = col
+                break
+
+        if cap_col is None:
+            print("❌ cap.csv 沒有股本欄位:", df.columns)
+            return pd.DataFrame(columns=["證券代號","發行股數"])
+
+        # ⭐ 股本 → 發行股數
+        df["股本"] = (
+            df[cap_col]
+            .astype(str)
+            .str.replace(",", "")
+            .replace("", "0")
+            .astype(float)
+        )
+
+        df["發行股數"] = df["股本"] * 10_000_000
+
+        return df[["證券代號", "發行股數"]]
+
+    except Exception as e:
+        print("❌ 讀取 cap.csv 失敗:", e)
         return pd.DataFrame(columns=["證券代號","發行股數"])
 
 
@@ -86,16 +107,18 @@ def build():
     if t.empty or y.empty:
         return None, "❌ API資料異常"
 
-    # ⭐ 保險（再統一一次）
-    t["證券代號"] = t["證券代號"].astype(str)
-    y["證券代號"] = y["證券代號"].astype(str)
-
     df = pd.merge(t, y, on="證券代號", suffixes=("_t", "_y"))
 
     # 合併股本
     if not cap.empty:
         df = pd.merge(df, cap, on="證券代號", how="left")
+
+        df["發行股數"] = pd.to_numeric(df["發行股數"], errors="coerce")
+        df["發行股數"] = df["發行股數"].replace(0, pd.NA)
+
+        # 使用率（百分比）
         df["使用率"] = df["餘額_t"] / df["發行股數"] * 100
+        df["使用率"] = df["使用率"].fillna(0)
     else:
         df["使用率"] = 0
 
@@ -111,17 +134,11 @@ def build():
 
     df["動作"] = df["增加量"].apply(judge)
 
-    # 排序
-    if "發行股數" in df.columns:
-        df = df.sort_values(by="使用率", ascending=False)
-    else:
-        df = df.sort_values(by="增加量", ascending=False)
-
-    df = df.head(30)
+    df = df.sort_values(by="使用率", ascending=False).head(30)
     df.insert(0, "排名", range(1, len(df)+1))
 
     # 格式化
-    df["使用率(%)"] = df["使用率"].fillna(0).map("{:.2f}".format)
+    df["使用率(%)"] = df["使用率"].map("{:.2f}".format)
     df["增加量"] = df["增加量"].map("{:+,.0f}".format)
     df["餘額"] = df["餘額_t"].map("{:,.0f}".format)
 

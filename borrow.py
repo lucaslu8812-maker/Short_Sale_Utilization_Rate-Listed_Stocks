@@ -173,7 +173,7 @@ def generate_html(df, msg):
         <html>
         <head><meta charset="UTF-8"></head>
         <body>
-        <h2>📊 借券監控</h2>
+        <h2>📊 上市券賣監控</h2>
         <p>{msg if msg else "⚠️ 尚無資料（等待API恢復）"}</p>
         <p>更新時間：{now}</p>
         </body>

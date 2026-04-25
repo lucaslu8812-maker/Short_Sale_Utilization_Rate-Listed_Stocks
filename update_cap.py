@@ -1,30 +1,44 @@
 import pandas as pd
+import requests
 
-url = "https://mopsfin.twse.com.tw/opendata/t187ap03_L.csv"
+# ===== 政府資料（上市公司基本資料，含股本）=====
+url = "https://quality.data.gov.tw/dq_download_csv.php?nid=18419"
 
-df = pd.read_csv(url, encoding="utf-8")
+# 下載
+df = pd.read_csv(url)
 
-# 找股數欄（最重要）
-target_col = None
+# ===== 找欄位（避免改名）=====
+code_col = None
+cap_col = None
+
 for col in df.columns:
-    if "股數" in col:
-        target_col = col
-        break
+    if "代號" in col:
+        code_col = col
+    if "股本" in col:
+        cap_col = col
 
-if target_col is None:
-    raise Exception(f"❌ 找不到股數欄位: {df.columns}")
+if code_col is None or cap_col is None:
+    raise Exception(f"❌ 找不到欄位: {df.columns}")
 
-df = df[["公司代號", target_col]]
-df.columns = ["證券代號", "發行股數"]
+# ===== 整理 =====
+df = df[[code_col, cap_col]].copy()
+df.columns = ["證券代號", "股本"]
 
-# 轉數字
-df["發行股數"] = (
-    df["發行股數"]
+# ===== 清洗 =====
+df["證券代號"] = df["證券代號"].astype(str).str.strip()
+
+df["股本"] = (
+    df["股本"]
     .astype(str)
     .str.replace(",", "")
+    .replace("", "0")
     .astype(float)
 )
 
-df.to_csv("cap.csv", index=False, encoding="utf-8")
+# 過濾掉非股票（例如空白 / ETF / 無代號）
+df = df[df["證券代號"].str.match(r"^\d{4}$")]
 
-print("✅ cap.csv 更新完成")
+# ===== 存檔（給 borrow.py 用）=====
+df.to_csv("cap.csv", index=False, encoding="utf-8-sig")
+
+print(f"✅ cap.csv 更新完成，共 {len(df)} 筆")

@@ -4,24 +4,33 @@ from datetime import datetime, timedelta
 import pytz
 
 
-# ===== 找最近交易日 =====
-def get_valid_date(offset_start=1):
+# ===== 找最近N個有資料交易日（穩定版）=====
+def get_last_n_valid_dates(n=2):
     tz = pytz.timezone("Asia/Taipei")
     now = datetime.now(tz)
 
-    for i in range(offset_start, offset_start + 7):
+    dates = []
+
+    for i in range(1, 15):  # 最多往前找兩週
         d = (now - timedelta(days=i)).strftime("%Y%m%d")
+
         try:
             url = f"https://www.twse.com.tw/exchangeReport/TWT72U?response=json&date={d}"
             data = requests.get(url, timeout=10).json()
+
             if data.get("stat") == "OK" and data.get("data"):
-                return d
+                dates.append(d)
+
+            if len(dates) >= n:
+                return dates
+
         except:
             continue
-    return None
+
+    return dates
 
 
-# ===== 借券資料（✅修正：穩定抓「借券當日餘額」）=====
+# ===== 借券賣出餘額（穩定抓欄位）=====
 def get_borrow(date):
     url = f"https://www.twse.com.tw/exchangeReport/TWT72U?response=json&date={date}"
     data = requests.get(url).json()
@@ -31,16 +40,20 @@ def get_borrow(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    # ⭐ 修正重點：只在「借券區塊」找「當日餘額」
+    df["證券代號"] = df["證券代號"].astype(str).str.zfill(4)
+
+    # ⭐ 只在借券區塊找「當日餘額」
     borrow_cols = df.columns[8:]
 
-    candidates = [c for c in borrow_cols if "餘額" in c]
+    target_col = None
+    for col in borrow_cols:
+        if "當日餘額" in col:
+            target_col = col
+            break
 
-    if len(candidates) < 1:
-        print("❌ 找不到借券當日餘額欄:", df.columns)
+    if target_col is None:
+        print("❌ 找不到借券當日餘額:", df.columns)
         return pd.DataFrame(columns=["證券代號","證券名稱","餘額"])
-
-    target_col = candidates[0]
 
     df["餘額"] = (
         df[target_col]
@@ -50,51 +63,69 @@ def get_borrow(date):
         .astype(float)
     )
 
-    df["證券代號"] = df["證券代號"].astype(str)
-
     return df[["證券代號", "證券名稱", "餘額"]]
 
 
-# ===== 讀 cap.csv =====
+# ===== 股本 =====
 def get_cap():
     try:
         df = pd.read_csv("cap.csv")
-        df["證券代號"] = df["證券代號"].astype(str)
-        return df
+        df["證券代號"] = df["證券代號"].astype(str).str.zfill(4)
+
+        cap_col = None
+        for col in df.columns:
+            if "股本" in col:
+                cap_col = col
+                break
+
+        if cap_col is None:
+            return pd.DataFrame(columns=["證券代號","發行股數"])
+
+        df["股本"] = (
+            df[cap_col]
+            .astype(str)
+            .str.replace(",", "")
+            .replace("", "0")
+            .astype(float)
+        )
+
+        df["發行股數"] = df["股本"] * 10_000_000
+
+        return df[["證券代號", "發行股數"]]
+
     except:
         return pd.DataFrame(columns=["證券代號","發行股數"])
 
 
 # ===== 主邏輯 =====
 def build():
-    today = get_valid_date(1)
-    yesterday = get_valid_date(2)
+    dates = get_last_n_valid_dates(2)
 
-    if not today or not yesterday:
+    if len(dates) < 2:
         return None, "❌ 無資料"
+
+    today, yesterday = dates[0], dates[1]
 
     t = get_borrow(today)
     y = get_borrow(yesterday)
     cap = get_cap()
 
-    if t.empty or y.empty or cap.empty:
+    if t.empty or y.empty:
         return None, "❌ API資料異常"
 
-    # ⭐ 若只有股本 → 轉發行股數
-    if "發行股數" not in cap.columns and "股本" in cap.columns:
-        cap["發行股數"] = cap["股本"] * 100000000 / 10
-
     df = pd.merge(t, y, on="證券代號", suffixes=("_t", "_y"))
-    df = pd.merge(df, cap, on="證券代號", how="left")
 
-    # ⭐ 排除彈性面額股票
-    df = df[~df["證券名稱_t"].str.contains(r"\*", na=False)]
+    if not cap.empty:
+        df = pd.merge(df, cap, on="證券代號", how="left")
 
-    # ⭐ 避免異常
-    df = df[df["發行股數"] > 0]
+        df["發行股數"] = pd.to_numeric(df["發行股數"], errors="coerce")
+        df["發行股數"] = df["發行股數"].replace(0, pd.NA)
 
-    # ===== 計算 =====
-    df["使用率"] = df["餘額_t"] / df["發行股數"] * 100
+        df["使用率"] = df["餘額_t"] / df["發行股數"] * 100
+        df["使用率"] = df["使用率"].fillna(0)
+    else:
+        df["使用率"] = 0
+
     df["增加量"] = df["餘額_t"] - df["餘額_y"]
 
     def judge(x):
@@ -109,79 +140,9 @@ def build():
     df = df.sort_values(by="使用率", ascending=False).head(30)
     df.insert(0, "排名", range(1, len(df)+1))
 
-    # 格式化
     df["使用率(%)"] = df["使用率"].map("{:.2f}".format)
     df["增加量"] = df["增加量"].map("{:+,.0f}".format)
     df["餘額"] = df["餘額_t"].map("{:,.0f}".format)
 
     display_date = f"{today[:4]}-{today[4:6]}-{today[6:]}"
     return df[["排名","證券代號","證券名稱_t","餘額","增加量","使用率(%)","動作"]], f"📅 {display_date}"
-
-
-# ===== HTML =====
-def generate_html(df, msg):
-    now = datetime.now(pytz.timezone("Asia/Taipei")).strftime("%Y-%m-%d %H:%M")
-
-    if df is None:
-        df = pd.DataFrame([{"排名":"-","證券代號":"-","證券名稱_t":"無資料"}])
-
-    rows = ""
-    for _, r in df.iterrows():
-        rate = float(r["使用率(%)"]) if "使用率(%)" in r else 0
-
-        style = ""
-        if rate > 10:
-            style = "background:#ffcccc;"
-        elif rate > 8:
-            style = "background:#fff3cd;"
-
-        rows += f"""
-        <tr style="{style}">
-            <td>{r.get('排名','')}</td>
-            <td>{r.get('證券代號','')}</td>
-            <td>{r.get('證券名稱_t','')}</td>
-            <td>{r.get('餘額','')}</td>
-            <td>{r.get('增加量','')}</td>
-            <td>{r.get('使用率(%)','')}</td>
-            <td>{r.get('動作','')}</td>
-        </tr>
-        """
-
-    html = f"""
-    <html>
-    <head>
-    <meta charset="UTF-8">
-    <meta http-equiv="refresh" content="300">
-    <style>
-    body {{ font-family:sans-serif;background:#f5f5f5; }}
-    .box {{ max-width:1000px;margin:auto;background:white;padding:20px }}
-    table {{ width:100%;border-collapse:collapse }}
-    th {{ background:#007aff;color:white;padding:10px }}
-    td {{ text-align:center;padding:10px;border-bottom:1px solid #eee }}
-    </style>
-    </head>
-    <body>
-    <div class="box">
-    <h2>📊 借券監控</h2>
-    <p>{msg}</p>
-    <p>更新時間：{now}</p>
-    <table>
-    <tr>
-    <th>排名</th><th>代號</th><th>名稱</th>
-    <th>餘額</th><th>增加量</th><th>使用率</th><th>動作</th>
-    </tr>
-    {rows}
-    </table>
-    </div>
-    </body>
-    </html>
-    """
-
-    with open("index.html","w",encoding="utf-8") as f:
-        f.write(html)
-
-
-# ===== 執行 =====
-if __name__ == "__main__":
-    df, msg = build()
-    generate_html(df, msg)

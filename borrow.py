@@ -2,11 +2,15 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 import pytz
+import os
 
-LINE_TOKEN = "你的LINE_NOTIFY_TOKEN"
+# ===== LINE TOKEN（用 GitHub Secrets）=====
+LINE_TOKEN = os.getenv("LINE_TOKEN")
 
 
 def send_line(msg):
+    if not LINE_TOKEN:
+        return
     try:
         requests.post(
             "https://notify-api.line.me/api/notify",
@@ -17,6 +21,7 @@ def send_line(msg):
         pass
 
 
+# ===== 找最近有資料的交易日 =====
 def get_valid_date(offset_start=1):
     tz = pytz.timezone("Asia/Taipei")
     now = datetime.now(tz)
@@ -33,19 +38,38 @@ def get_valid_date(offset_start=1):
     return None
 
 
+# ===== 借券賣出餘額（防呆版）=====
 def get_borrow(date):
     url = f"https://www.twse.com.tw/exchangeReport/TWT72U?response=json&date={date}"
     data = requests.get(url).json()
 
+    if not data.get("data") or not data.get("fields"):
+        return pd.DataFrame(columns=["證券代號","證券名稱","餘額"])
+
     df = pd.DataFrame(data["data"], columns=data["fields"])
-    df["餘額"] = df["當日餘額"].str.replace(",", "").astype(float)
+
+    # 自動找「餘額」欄位
+    target_col = None
+    for col in df.columns:
+        if "餘額" in col:
+            target_col = col
+            break
+
+    if target_col is None:
+        return pd.DataFrame(columns=["證券代號","證券名稱","餘額"])
+
+    df["餘額"] = df[target_col].str.replace(",", "").astype(float)
 
     return df[["證券代號", "證券名稱", "餘額"]]
 
 
+# ===== 股本 =====
 def get_cap(date):
     url = f"https://www.twse.com.tw/exchangeReport/BWIBBU_d?response=json&date={date}"
     data = requests.get(url).json()
+
+    if not data.get("data"):
+        return pd.DataFrame(columns=["證券代號","發行股數"])
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
     df["股本"] = pd.to_numeric(df["股本"], errors="coerce")
@@ -54,6 +78,7 @@ def get_cap(date):
     return df[["證券代號", "發行股數"]]
 
 
+# ===== 主邏輯 =====
 def build():
     today = get_valid_date(1)
     yesterday = get_valid_date(2)
@@ -65,6 +90,10 @@ def build():
     y = get_borrow(yesterday)
     cap = get_cap(today)
 
+    # 防呆
+    if t.empty or y.empty or cap.empty:
+        return None, "❌ API資料異常"
+
     df = pd.merge(t, y, on="證券代號", suffixes=("_t", "_y"))
     df = pd.merge(df, cap, on="證券代號")
 
@@ -72,28 +101,39 @@ def build():
     df["使用率"] = df["餘額_t"] / df["發行股數"] * 100
     df["增加量"] = df["餘額_t"] - df["餘額_y"]
 
-    df = df.sort_values(by="使用率", ascending=False).head(30)
+    # ===== 主力判斷 =====
+    def judge(row):
+        if row["增加量"] > 0:
+            return "主力加空"
+        elif row["增加量"] < 0:
+            return "主力回補"
+        else:
+            return "無變化"
 
+    df["動作"] = df.apply(judge, axis=1)
+
+    df = df.sort_values(by="使用率", ascending=False).head(30)
     df.insert(0, "排名", range(1, len(df)+1))
 
-    # LINE 推播
-    alerts = df[df["使用率"] > 8]
+    # ===== LINE 推播 =====
+    alerts = df[(df["使用率"] > 8) & (df["增加量"] > 0)]
 
     if not alerts.empty:
-        msg = "🚨 借券使用率警報\n"
+        msg = "🚨 借券放空警報（主力加空）\n"
         for _, r in alerts.iterrows():
             msg += f"{r['證券代號']} {r['證券名稱_t']} {r['使用率']:.2f}% (+{int(r['增加量'])})\n"
         send_line(msg)
 
-    # 格式化
+    # ===== 格式化 =====
     df["使用率(%)"] = df["使用率"].map("{:.2f}".format)
     df["增加量"] = df["增加量"].map("{:+,.0f}".format)
     df["餘額"] = df["餘額_t"].map("{:,.0f}".format)
 
     display_date = f"{today[:4]}-{today[4:6]}-{today[6:]}"
-    return df[["排名","證券代號","證券名稱_t","餘額","增加量","使用率(%)"]], f"📅 {display_date}"
+    return df[["排名","證券代號","證券名稱_t","餘額","增加量","使用率(%)","動作"]], f"📅 {display_date}"
 
 
+# ===== HTML =====
 def generate_html(df, msg):
     now = datetime.now(pytz.timezone("Asia/Taipei")).strftime("%Y-%m-%d %H:%M")
 
@@ -102,22 +142,23 @@ def generate_html(df, msg):
 
     rows = ""
     for _, r in df.iterrows():
-        rate = float(r["使用率(%)"])
+        rate = float(r["使用率(%)"]) if "使用率(%)" in r else 0
 
         style = ""
         if rate > 10:
-            style = "background:#ffcccc;"   # 紅色警報
+            style = "background:#ffcccc;"
         elif rate > 8:
-            style = "background:#fff3cd;"   # 黃色警戒
+            style = "background:#fff3cd;"
 
         rows += f"""
         <tr style="{style}">
-            <td>{r['排名']}</td>
-            <td>{r['證券代號']}</td>
-            <td>{r['證券名稱_t']}</td>
-            <td>{r['餘額']}</td>
-            <td>{r['增加量']}</td>
-            <td>{r['使用率(%)']}</td>
+            <td>{r.get('排名','')}</td>
+            <td>{r.get('證券代號','')}</td>
+            <td>{r.get('證券名稱_t','')}</td>
+            <td>{r.get('餘額','')}</td>
+            <td>{r.get('增加量','')}</td>
+            <td>{r.get('使用率(%)','')}</td>
+            <td>{r.get('動作','')}</td>
         </tr>
         """
 
@@ -128,7 +169,7 @@ def generate_html(df, msg):
     <meta http-equiv="refresh" content="300">
     <style>
     body {{ font-family:sans-serif;background:#f5f5f5; }}
-    .box {{ max-width:900px;margin:auto;background:white;padding:20px }}
+    .box {{ max-width:1000px;margin:auto;background:white;padding:20px }}
     table {{ width:100%;border-collapse:collapse }}
     th {{ background:#007aff;color:white;padding:10px }}
     td {{ text-align:center;padding:10px;border-bottom:1px solid #eee }}
@@ -136,13 +177,13 @@ def generate_html(df, msg):
     </head>
     <body>
     <div class="box">
-    <h2>📊 借券監控（接近10%）</h2>
+    <h2>📊 借券監控（主力行為版）</h2>
     <p>{msg}</p>
     <p>更新時間：{now}</p>
     <table>
     <tr>
     <th>排名</th><th>代號</th><th>名稱</th>
-    <th>餘額</th><th>增加量</th><th>使用率</th>
+    <th>餘額</th><th>增加量</th><th>使用率</th><th>主力動作</th>
     </tr>
     {rows}
     </table>
@@ -155,6 +196,7 @@ def generate_html(df, msg):
         f.write(html)
 
 
+# ===== 執行 =====
 if __name__ == "__main__":
     df, msg = build()
     generate_html(df, msg)

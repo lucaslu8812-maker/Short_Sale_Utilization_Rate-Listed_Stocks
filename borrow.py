@@ -21,7 +21,7 @@ def get_valid_date(offset_start=1):
     return None
 
 
-# ===== 借券賣出餘額 =====
+# ===== 借券賣出餘額（修正欄位）=====
 def get_borrow(date):
     url = f"https://www.twse.com.tw/exchangeReport/TWT72U?response=json&date={date}"
     data = requests.get(url).json()
@@ -31,13 +31,15 @@ def get_borrow(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
+    # ⭐ 修正：精準抓「借券賣出餘額」
     target_col = None
     for col in df.columns:
-        if "餘額" in col:
+        if "借券賣出餘額" in col:
             target_col = col
             break
 
     if target_col is None:
+        print("❌ 找不到借券賣出餘額欄:", df.columns)
         return pd.DataFrame(columns=["證券代號","證券名稱","餘額"])
 
     df["餘額"] = (
@@ -78,14 +80,14 @@ def build():
     if t.empty or y.empty or cap.empty:
         return None, "❌ API資料異常"
 
-    # ⭐ 修BUG：如果沒有發行股數，自動由股本換算
+    # ⭐ 修BUG：補發行股數
     if "發行股數" not in cap.columns and "股本" in cap.columns:
         cap["發行股數"] = cap["股本"] * 100000000 / 10
 
     df = pd.merge(t, y, on="證券代號", suffixes=("_t", "_y"))
     df = pd.merge(df, cap, on="證券代號", how="left")
 
-    # ⭐ 修正：排除彈性面額股票
+    # ⭐ 排除彈性面額股票
     df = df[~df["證券名稱_t"].str.contains(r"\*", na=False)]
 
     # ⭐ 避免發行股數異常

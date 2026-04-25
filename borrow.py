@@ -21,7 +21,7 @@ def get_valid_date(offset_start=1):
     return None
 
 
-# ===== 借券資料（修正：抓當日餘額）=====
+# ===== 借券資料（✅修正：穩定抓「借券當日餘額」）=====
 def get_borrow(date):
     url = f"https://www.twse.com.tw/exchangeReport/TWT72U?response=json&date={date}"
     data = requests.get(url).json()
@@ -31,16 +31,16 @@ def get_borrow(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    # ⭐ 修正重點：只抓「借券賣出當日餘額」
-    target_col = None
-    for col in df.columns:
-        if "借券賣出" in col and "當日餘額" in col:
-            target_col = col
-            break
+    # ⭐ 修正重點：只在「借券區塊」找「當日餘額」
+    borrow_cols = df.columns[8:]
 
-    if target_col is None:
-        print("❌ 找不到借券賣出當日餘額欄:", df.columns)
+    candidates = [c for c in borrow_cols if "餘額" in c]
+
+    if len(candidates) < 1:
+        print("❌ 找不到借券當日餘額欄:", df.columns)
         return pd.DataFrame(columns=["證券代號","證券名稱","餘額"])
+
+    target_col = candidates[0]
 
     df["餘額"] = (
         df[target_col]

@@ -2,26 +2,9 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 import pytz
-import os
-
-# ===== LINE TOKEN（用 GitHub Secrets）=====
-LINE_TOKEN = os.getenv("LINE_TOKEN")
 
 
-def send_line(msg):
-    if not LINE_TOKEN:
-        return
-    try:
-        requests.post(
-            "https://notify-api.line.me/api/notify",
-            headers={"Authorization": f"Bearer {LINE_TOKEN}"},
-            data={"message": msg}
-        )
-    except:
-        pass
-
-
-# ===== 找最近有資料的交易日 =====
+# ===== 找最近交易日 =====
 def get_valid_date(offset_start=1):
     tz = pytz.timezone("Asia/Taipei")
     now = datetime.now(tz)
@@ -38,7 +21,7 @@ def get_valid_date(offset_start=1):
     return None
 
 
-# ===== 借券賣出餘額（防呆版）=====
+# ===== 借券資料（完全防炸）=====
 def get_borrow(date):
     url = f"https://www.twse.com.tw/exchangeReport/TWT72U?response=json&date={date}"
     data = requests.get(url).json()
@@ -48,7 +31,7 @@ def get_borrow(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    # 自動找「餘額」欄位
+    # 自動找餘額欄
     target_col = None
     for col in df.columns:
         if "餘額" in col:
@@ -90,7 +73,6 @@ def build():
     y = get_borrow(yesterday)
     cap = get_cap(today)
 
-    # 防呆
     if t.empty or y.empty or cap.empty:
         return None, "❌ API資料異常"
 
@@ -101,30 +83,20 @@ def build():
     df["使用率"] = df["餘額_t"] / df["發行股數"] * 100
     df["增加量"] = df["餘額_t"] - df["餘額_y"]
 
-    # ===== 主力判斷 =====
-    def judge(row):
-        if row["增加量"] > 0:
-            return "主力加空"
-        elif row["增加量"] < 0:
-            return "主力回補"
-        else:
-            return "無變化"
+    # 主力判斷
+    def judge(x):
+        if x > 0:
+            return "加空"
+        elif x < 0:
+            return "回補"
+        return "無"
 
-    df["動作"] = df.apply(judge, axis=1)
+    df["動作"] = df["增加量"].apply(judge)
 
     df = df.sort_values(by="使用率", ascending=False).head(30)
     df.insert(0, "排名", range(1, len(df)+1))
 
-    # ===== LINE 推播 =====
-    alerts = df[(df["使用率"] > 8) & (df["增加量"] > 0)]
-
-    if not alerts.empty:
-        msg = "🚨 借券放空警報（主力加空）\n"
-        for _, r in alerts.iterrows():
-            msg += f"{r['證券代號']} {r['證券名稱_t']} {r['使用率']:.2f}% (+{int(r['增加量'])})\n"
-        send_line(msg)
-
-    # ===== 格式化 =====
+    # 格式化
     df["使用率(%)"] = df["使用率"].map("{:.2f}".format)
     df["增加量"] = df["增加量"].map("{:+,.0f}".format)
     df["餘額"] = df["餘額_t"].map("{:,.0f}".format)
@@ -177,13 +149,13 @@ def generate_html(df, msg):
     </head>
     <body>
     <div class="box">
-    <h2>📊 借券監控（主力行為版）</h2>
+    <h2>📊 借券監控</h2>
     <p>{msg}</p>
     <p>更新時間：{now}</p>
     <table>
     <tr>
     <th>排名</th><th>代號</th><th>名稱</th>
-    <th>餘額</th><th>增加量</th><th>使用率</th><th>主力動作</th>
+    <th>餘額</th><th>增加量</th><th>使用率</th><th>動作</th>
     </tr>
     {rows}
     </table>

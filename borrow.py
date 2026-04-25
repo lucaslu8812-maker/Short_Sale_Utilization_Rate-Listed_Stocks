@@ -31,11 +31,11 @@ def get_borrow(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    # ✅ 過濾合計 + 非股票
+    # 過濾合計 + 非股票
     df = df[~df["證券代號"].astype(str).str.contains("合計", na=False)]
     df = df[df["證券代號"].astype(str).str.isnumeric()]
 
-    # ===== 找餘額欄 =====
+    # 找餘額欄
     target_col = None
     for col in df.columns:
         if "餘額" in col:
@@ -53,7 +53,7 @@ def get_borrow(date):
         .astype(float)
     )
 
-    # ===== 找名稱欄 =====
+    # 找名稱欄
     name_col = None
     for col in df.columns:
         if "名稱" in col:
@@ -76,7 +76,7 @@ def get_cap(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    # ===== 找股本欄 =====
+    # 找股本欄
     cap_col = None
     for col in df.columns:
         if "股本" in col or "資本" in col:
@@ -114,10 +114,12 @@ def build():
     if t.empty or y.empty:
         return None, "❌ 借券資料異常"
 
-    # ✅ merge 修正（避免錯位）
     df = pd.merge(t, y, on="證券代號", how="inner", suffixes=("_t", "_y"))
 
-    # ===== 如果沒有股本 → 不算使用率 =====
+    # ✅ 修正這裡（關鍵）
+    if "證券名稱_t" in df.columns:
+        df["證券名稱"] = df["證券名稱_t"]
+
     if cap.empty:
         df["使用率"] = 0
         msg = f"⚠️ 無股本資料（{today}）"
@@ -126,7 +128,6 @@ def build():
         df["使用率"] = df["餘額_t"] / df["發行股數"] * 100
         msg = f"📅 {today[:4]}-{today[4:6]}-{today[6:]}"
 
-    # ===== 計算 =====
     df["增加量"] = df["餘額_t"] - df["餘額_y"]
 
     def judge(x):
@@ -141,7 +142,6 @@ def build():
     df = df.sort_values(by="餘額_t", ascending=False).head(30)
     df.insert(0, "排名", range(1, len(df)+1))
 
-    # ===== 格式化 =====
     df["使用率(%)"] = df["使用率"].map("{:.2f}".format)
     df["增加量"] = df["增加量"].map("{:+,.0f}".format)
     df["餘額"] = df["餘額_t"].map("{:,.0f}".format)

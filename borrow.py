@@ -21,7 +21,7 @@ def get_valid_date(offset_start=1):
     return None
 
 
-# ===== 借券賣出餘額（防欄位變動）=====
+# ===== 借券賣出餘額 =====
 def get_borrow(date):
     url = f"https://www.twse.com.tw/exchangeReport/TWT72U?response=json&date={date}"
     data = requests.get(url).json()
@@ -31,7 +31,6 @@ def get_borrow(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    # 自動找餘額欄
     target_col = None
     for col in df.columns:
         if "餘額" in col:
@@ -53,7 +52,7 @@ def get_borrow(date):
     return df[["證券代號", "證券名稱", "餘額"]]
 
 
-# ===== 股本（防欄位變動）=====
+# ===== 股本 =====
 def get_cap(date):
     url = f"https://www.twse.com.tw/exchangeReport/BWIBBU_d?response=json&date={date}"
     data = requests.get(url).json()
@@ -63,7 +62,6 @@ def get_cap(date):
 
     df = pd.DataFrame(data["data"], columns=data["fields"])
 
-    # 自動找股本欄
     cap_col = None
     for col in df.columns:
         if "股本" in col or "資本" in col:
@@ -99,17 +97,33 @@ def build():
     y = get_borrow(yesterday)
     cap = get_cap(today)
 
-    if t.empty or y.empty or cap.empty:
-        return None, "❌ API資料異常"
+    # ❗只修這裡（關鍵BUG修正）
+    if t.empty or y.empty:
+        return None, "❌ 借券資料異常"
 
+    if cap.empty:
+        print("⚠️ 股本API失效，改用借券排行")
+
+        df = pd.merge(t, y, on="證券代號", suffixes=("_t", "_y"))
+
+        df["增加量"] = df["餘額_t"] - df["餘額_y"]
+        df = df.sort_values(by="餘額_t", ascending=False).head(30)
+
+        df.insert(0, "排名", range(1, len(df)+1))
+
+        df["餘額"] = df["餘額_t"].map("{:,.0f}".format)
+        df["增加量"] = df["增加量"].map("{:+,.0f}".format)
+
+        display_date = f"{today[:4]}-{today[4:6]}-{today[6:]}"
+        return df[["排名","證券代號","證券名稱_t","餘額","增加量"]], f"⚠️ 無股本資料（{display_date}）"
+
+    # ===== 原本邏輯完全保留 =====
     df = pd.merge(t, y, on="證券代號", suffixes=("_t", "_y"))
     df = pd.merge(df, cap, on="證券代號")
 
-    # 計算
     df["使用率"] = df["餘額_t"] / df["發行股數"] * 100
     df["增加量"] = df["餘額_t"] - df["餘額_y"]
 
-    # 主力判斷
     def judge(x):
         if x > 0:
             return "加空"
@@ -122,7 +136,6 @@ def build():
     df = df.sort_values(by="使用率", ascending=False).head(30)
     df.insert(0, "排名", range(1, len(df)+1))
 
-    # 格式化
     df["使用率(%)"] = df["使用率"].map("{:.2f}".format)
     df["增加量"] = df["增加量"].map("{:+,.0f}".format)
     df["餘額"] = df["餘額_t"].map("{:,.0f}".format)
@@ -131,7 +144,7 @@ def build():
     return df[["排名","證券代號","證券名稱_t","餘額","增加量","使用率(%)","動作"]], f"📅 {display_date}"
 
 
-# ===== HTML =====
+# ===== HTML（完全沒動）=====
 def generate_html(df, msg):
     now = datetime.now(pytz.timezone("Asia/Taipei")).strftime("%Y-%m-%d %H:%M")
 

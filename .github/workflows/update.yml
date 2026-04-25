@@ -2,7 +2,7 @@ name: Auto Update
 
 on:
   schedule:
-    - cron: "0 11 * * *"
+    - cron: "0 8 * * *"   # 台灣 16:00
   workflow_dispatch:
 
 permissions:
@@ -12,23 +12,25 @@ jobs:
   run:
     runs-on: ubuntu-latest
 
-    env:
-      LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
-
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout
+      uses: actions/checkout@v3
 
-    - uses: actions/setup-python@v4
+    - name: Setup Python
+      uses: actions/setup-python@v4
       with:
         python-version: "3.10"
 
-    - run: pip install -r requirements.txt
+    - name: Install packages
+      run: pip install -r requirements.txt
 
-    - run: python borrow.py
+    - name: Run script
+      run: python borrow.py
 
-    - run: |
+    - name: Commit & Push
+      run: |
         git config --global user.name "github-actions"
         git config --global user.email "actions@github.com"
         git add index.html
-        git commit -m "update" || echo "no change"
+        git diff --cached --quiet || git commit -m "update data"
         git push
